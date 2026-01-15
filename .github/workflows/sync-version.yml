@@ -1,0 +1,68 @@
+name: Sync FluidAudio Version
+
+on:
+  schedule:
+    # Check daily at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest FluidAudio version
+        id: fluidaudio
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/FluidInference/FluidAudio/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          echo "version=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest FluidAudio: $LATEST"
+
+      - name: Get current version
+        id: current
+        run: |
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          if [ "${{ steps.fluidaudio.outputs.version }}" != "${{ steps.current.outputs.version }}" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "Update needed: ${{ steps.current.outputs.version }} → ${{ steps.fluidaudio.outputs.version }}"
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+      - name: Update versions
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          NEW_VERSION="${{ steps.fluidaudio.outputs.version }}"
+
+          # Update Cargo.toml
+          sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" Cargo.toml
+
+          # Update Package.swift
+          sed -i "s/exact: \".*\"/exact: \"$NEW_VERSION\"/" Package.swift
+
+          echo "Updated to $NEW_VERSION"
+
+      - name: Create Pull Request
+        if: steps.check.outputs.needs_update == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Sync to FluidAudio ${{ steps.fluidaudio.outputs.version }}"
+          title: "Sync to FluidAudio ${{ steps.fluidaudio.outputs.version }}"
+          body: |
+            Automated version sync to match FluidAudio release.
+
+            - FluidAudio: ${{ steps.fluidaudio.outputs.version }}
+            - Previous: ${{ steps.current.outputs.version }}
+
+            After merging, tag with `v${{ steps.fluidaudio.outputs.version }}` to publish.
+          branch: sync-fluidaudio-${{ steps.fluidaudio.outputs.version }}
+          delete-branch: true
