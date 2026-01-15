@@ -46,6 +46,10 @@ pub struct FluidAudioBridge {
     ptr: *mut std::ffi::c_void,
 }
 
+// The Swift bridge is thread-safe as it uses internal synchronization
+unsafe impl Send for FluidAudioBridge {}
+unsafe impl Sync for FluidAudioBridge {}
+
 impl FluidAudioBridge {
     pub fn new() -> Option<Self> {
         let ptr = unsafe { fluidaudio_bridge_create() };
