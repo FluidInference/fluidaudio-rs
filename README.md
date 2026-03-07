@@ -6,6 +6,7 @@ Rust bindings for [FluidAudio](https://github.com/FluidInference/FluidAudio) - a
 
 - **ASR (Automatic Speech Recognition)** - High-quality speech-to-text using Parakeet TDT models
 - **VAD (Voice Activity Detection)** - Detect speech segments in audio
+- **Speaker Diarization** - Identify and label different speakers in audio
 
 ## Requirements
 
@@ -63,6 +64,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     audio.init_vad(0.85)?;
 
     println!("VAD available: {}", audio.is_vad_available());
+
+    Ok(())
+}
+```
+
+### Speaker Diarization
+
+```rust
+use fluidaudio_rs::FluidAudio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = FluidAudio::new()?;
+
+    // Initialize diarization with clustering threshold (0.0-1.0)
+    // Lower = more speakers, higher = fewer speakers
+    audio.init_diarization(0.6)?;
+
+    // Diarize an audio file
+    let segments = audio.diarize_file("meeting.wav")?;
+    for seg in &segments {
+        println!(
+            "[{:.2}s - {:.2}s] {}",
+            seg.start_time, seg.end_time, seg.speaker_id
+        );
+    }
 
     Ok(())
 }
