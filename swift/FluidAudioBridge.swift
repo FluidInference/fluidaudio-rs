@@ -6,10 +6,19 @@ import Darwin
 // MARK: - Bridge Class
 
 /// Internal bridge class that wraps FluidAudio
+/// Internal diarization segment used within the bridge.
+struct BridgeDiarizationSegment {
+    var speakerId: String
+    var startTime: Float
+    var endTime: Float
+    var qualityScore: Float
+}
+
 class FluidAudioBridgeInternal {
     private var asrManager: AsrManager?
     private var asrModels: AsrModels?
     private var vadManager: VadManager?
+    private var diarizerManager: OfflineDiarizerManager?
 
     init() {}
 
@@ -100,10 +109,80 @@ class FluidAudioBridgeInternal {
         return vadManager != nil
     }
 
+    // MARK: - Diarization
+
+    func initializeDiarization(_ threshold: Double) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        var initError: Error?
+
+        Task {
+            do {
+                var config = OfflineDiarizerConfig()
+                config.clustering.threshold = threshold
+                let manager = OfflineDiarizerManager(config: config)
+                try await manager.prepareModels()
+                self.diarizerManager = manager
+            } catch {
+                initError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = initError {
+            throw error
+        }
+    }
+
+    func diarizeFile(_ path: String) throws -> [BridgeDiarizationSegment] {
+        guard let manager = diarizerManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: DiarizationResult?
+        var diarizeError: Error?
+
+        Task {
+            do {
+                let url = URL(fileURLWithPath: path)
+                result = try await manager.process(url)
+            } catch {
+                diarizeError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = diarizeError {
+            throw error
+        }
+
+        guard let r = result else {
+            throw BridgeError.noResult
+        }
+
+        return r.segments.map { segment in
+            BridgeDiarizationSegment(
+                speakerId: segment.speakerId,
+                startTime: segment.startTimeSeconds,
+                endTime: segment.endTimeSeconds,
+                qualityScore: segment.qualityScore
+            )
+        }
+    }
+
+    func isDiarizationAvailable() -> Bool {
+        return diarizerManager != nil
+    }
+
     func cleanup() {
         asrManager = nil
         asrModels = nil
         vadManager = nil
+        diarizerManager = nil
     }
 }
 
@@ -209,6 +288,104 @@ public func fluidaudio_is_vad_available(_ ptr: UnsafeMutableRawPointer?) -> Int3
     let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
     return bridge.isVadAvailable() ? 1 : 0
 }
+
+// MARK: - Diarization FFI
+
+@_cdecl("fluidaudio_initialize_diarization")
+public func fluidaudio_initialize_diarization(_ ptr: UnsafeMutableRawPointer?, _ threshold: Double) -> Int32 {
+    guard let ptr = ptr else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    do {
+        try bridge.initializeDiarization(threshold)
+        return 0
+    } catch {
+        print("Diarization init error: \(error)")
+        return -1
+    }
+}
+
+/// Diarize a file. Returns segment count via outCount.
+/// Each segment is 4 consecutive values: speakerId (char*), startTime (float), endTime (float), qualityScore (float).
+/// The flat arrays outSpeakerIds, outStartTimes, outEndTimes, outQualityScores must be freed by the caller.
+@_cdecl("fluidaudio_diarize_file")
+public func fluidaudio_diarize_file(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ path: UnsafePointer<CChar>?,
+    _ outSpeakerIds: UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?>?,
+    _ outStartTimes: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    _ outEndTimes: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    _ outQualityScores: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    _ outCount: UnsafeMutablePointer<UInt32>?
+) -> Int32 {
+    guard let ptr = ptr, let path = path else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let pathString = String(cString: path)
+
+    do {
+        let segments = try bridge.diarizeFile(pathString)
+        let count = segments.count
+
+        outCount?.pointee = UInt32(count)
+
+        if count == 0 {
+            outSpeakerIds?.pointee = nil
+            outStartTimes?.pointee = nil
+            outEndTimes?.pointee = nil
+            outQualityScores?.pointee = nil
+        } else {
+            let ids = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: count)
+            let starts = UnsafeMutablePointer<Float>.allocate(capacity: count)
+            let ends = UnsafeMutablePointer<Float>.allocate(capacity: count)
+            let scores = UnsafeMutablePointer<Float>.allocate(capacity: count)
+
+            for (i, seg) in segments.enumerated() {
+                ids[i] = strdup(seg.speakerId)
+                starts[i] = seg.startTime
+                ends[i] = seg.endTime
+                scores[i] = seg.qualityScore
+            }
+
+            outSpeakerIds?.pointee = ids
+            outStartTimes?.pointee = starts
+            outEndTimes?.pointee = ends
+            outQualityScores?.pointee = scores
+        }
+
+        return 0
+    } catch {
+        print("Diarize error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_is_diarization_available")
+public func fluidaudio_is_diarization_available(_ ptr: UnsafeMutableRawPointer?) -> Int32 {
+    guard let ptr = ptr else { return 0 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    return bridge.isDiarizationAvailable() ? 1 : 0
+}
+
+@_cdecl("fluidaudio_free_diarization_result")
+public func fluidaudio_free_diarization_result(
+    _ speakerIds: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ startTimes: UnsafeMutablePointer<Float>?,
+    _ endTimes: UnsafeMutablePointer<Float>?,
+    _ qualityScores: UnsafeMutablePointer<Float>?,
+    _ count: UInt32
+) {
+    if let ids = speakerIds {
+        for i in 0..<Int(count) {
+            free(ids[i])
+        }
+        ids.deallocate()
+    }
+    startTimes?.deallocate()
+    endTimes?.deallocate()
+    qualityScores?.deallocate()
+}
+
+// MARK: - System Info FFI
 
 @_cdecl("fluidaudio_get_platform")
 public func fluidaudio_get_platform(_ out: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) {

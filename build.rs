@@ -19,8 +19,10 @@ fn main() {
     let status = Command::new("swift")
         .args(&[
             "build",
-            "-c", "release",
-            "--build-path", swift_build_dir.to_str().unwrap(),
+            "-c",
+            "release",
+            "--build-path",
+            swift_build_dir.to_str().unwrap(),
         ])
         .current_dir(&manifest_dir)
         .status()

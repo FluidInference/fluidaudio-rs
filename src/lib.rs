@@ -7,6 +7,7 @@
 //!
 //! - **ASR (Automatic Speech Recognition)** - High-quality speech-to-text using Parakeet TDT models
 //! - **VAD (Voice Activity Detection)** - Detect speech segments in audio
+//! - **Speaker Diarization** - Identify and label different speakers in audio
 //!
 //! ## Requirements
 //!
@@ -37,7 +38,7 @@ use std::path::Path;
 use thiserror::Error;
 
 // Re-export FFI types
-pub use ffi::{AsrResult, SystemInfo};
+pub use ffi::{AsrResult, DiarizationSegment, SystemInfo};
 
 /// Errors that can occur when using FluidAudio
 #[derive(Error, Debug)]
@@ -128,6 +129,49 @@ impl FluidAudio {
     /// Check if VAD is initialized and ready
     pub fn is_vad_available(&self) -> bool {
         self.bridge.is_vad_available()
+    }
+
+    // ========== Diarization Methods ==========
+
+    /// Initialize the speaker diarization engine
+    ///
+    /// This downloads and loads the diarization models. First run may take
+    /// some time as models are compiled for the Neural Engine.
+    ///
+    /// # Arguments
+    /// * `threshold` - Clustering threshold (0.0-1.0, default 0.6). Lower values
+    ///   produce more speakers, higher values merge speakers more aggressively.
+    pub fn init_diarization(&self, threshold: f64) -> Result<(), FluidAudioError> {
+        self.bridge
+            .initialize_diarization(threshold)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Diarize an audio file to identify speaker segments
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file (WAV, M4A, MP3, etc.)
+    ///
+    /// # Returns
+    /// * `Vec<DiarizationSegment>` containing speaker-labeled time segments
+    pub fn diarize_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<Vec<DiarizationSegment>, FluidAudioError> {
+        let path_str = path.as_ref().to_string_lossy();
+
+        if !path.as_ref().exists() {
+            return Err(FluidAudioError::FileNotFound(path_str.to_string()));
+        }
+
+        self.bridge
+            .diarize_file(&path_str)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Check if diarization is initialized and ready
+    pub fn is_diarization_available(&self) -> bool {
+        self.bridge.is_diarization_available()
     }
 
     // ========== System Info ==========
