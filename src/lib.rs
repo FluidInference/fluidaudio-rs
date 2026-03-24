@@ -109,6 +109,41 @@ impl FluidAudio {
             .map_err(FluidAudioError::from)
     }
 
+    /// Transcribe audio samples directly
+    ///
+    /// This method accepts raw 16kHz mono audio samples, making it ideal for
+    /// real-time audio applications where audio is captured from a microphone
+    /// or other streaming source.
+    ///
+    /// # Arguments
+    /// * `samples` - Slice of f32 audio samples (16kHz mono, normalized to -1.0 to 1.0)
+    ///
+    /// # Returns
+    /// * `AsrResult` containing the transcribed text and metadata
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///     audio.init_asr()?;
+    ///
+    ///     // Simulated audio buffer (16kHz mono)
+    ///     let samples: Vec<f32> = vec![0.0; 16000]; // 1 second of silence
+    ///
+    ///     let result = audio.transcribe_samples(&samples)?;
+    ///     println!("Text: {}", result.text);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn transcribe_samples(&self, samples: &[f32]) -> Result<AsrResult, FluidAudioError> {
+        self.bridge
+            .transcribe_samples(samples)
+            .map_err(FluidAudioError::from)
+    }
+
     /// Check if ASR is initialized and ready
     pub fn is_asr_available(&self) -> bool {
         self.bridge.is_asr_available()

@@ -52,6 +52,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Real-Time Audio (Samples)
+
+For real-time audio applications, you can transcribe raw audio samples directly without file I/O:
+
+```rust
+use fluidaudio_rs::FluidAudio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = FluidAudio::new()?;
+    audio.init_asr()?;
+
+    // Audio samples from microphone or streaming source
+    // (16kHz mono, normalized to -1.0 to 1.0)
+    let samples: Vec<f32> = capture_audio_from_mic();
+
+    // Transcribe samples directly
+    let result = audio.transcribe_samples(&samples)?;
+    println!("Text: {}", result.text);
+
+    Ok(())
+}
+```
+
+This is ideal for meeting transcription apps, voice assistants, and other real-time scenarios where writing to temporary files adds unnecessary overhead.
+
 ### Voice Activity Detection (VAD)
 
 ```rust
