@@ -20,6 +20,16 @@ extern "C" {
         out_processing_time: *mut f64,
         out_rtfx: *mut f32,
     ) -> i32;
+    fn fluidaudio_transcribe_samples(
+        bridge: *mut std::ffi::c_void,
+        samples: *const f32,
+        count: u32,
+        out_text: *mut *mut i8,
+        out_confidence: *mut f32,
+        out_duration: *mut f64,
+        out_processing_time: *mut f64,
+        out_rtfx: *mut f32,
+    ) -> i32;
     fn fluidaudio_is_asr_available(bridge: *mut std::ffi::c_void) -> i32;
 
     // VAD
@@ -112,6 +122,49 @@ impl FluidAudioBridge {
 
         if result != 0 {
             return Err("Transcription failed".to_string());
+        }
+
+        let text = if text_ptr.is_null() {
+            String::new()
+        } else {
+            let text = unsafe { CStr::from_ptr(text_ptr) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { fluidaudio_free_string(text_ptr) };
+            text
+        };
+
+        Ok(AsrResult {
+            text,
+            confidence,
+            duration,
+            processing_time,
+            rtfx,
+        })
+    }
+
+    pub fn transcribe_samples(&self, samples: &[f32]) -> Result<AsrResult, String> {
+        let mut text_ptr: *mut i8 = std::ptr::null_mut();
+        let mut confidence: f32 = 0.0;
+        let mut duration: f64 = 0.0;
+        let mut processing_time: f64 = 0.0;
+        let mut rtfx: f32 = 0.0;
+
+        let result = unsafe {
+            fluidaudio_transcribe_samples(
+                self.ptr,
+                samples.as_ptr(),
+                samples.len() as u32,
+                &mut text_ptr,
+                &mut confidence,
+                &mut duration,
+                &mut processing_time,
+                &mut rtfx,
+            )
+        };
+
+        if result != 0 {
+            return Err("Sample transcription failed".to_string());
         }
 
         let text = if text_ptr.is_null() {

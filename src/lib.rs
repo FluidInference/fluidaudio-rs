@@ -6,6 +6,8 @@
 //! ## Features
 //!
 //! - **ASR (Automatic Speech Recognition)** - High-quality speech-to-text using Parakeet TDT models
+//!   - File transcription (`transcribe_file`)
+//!   - Real-time sample transcription (`transcribe_samples`) - for streaming/real-time use cases
 //! - **VAD (Voice Activity Detection)** - Detect speech segments in audio
 //! - **Speaker Diarization** - Identify and label different speakers in audio
 //!
@@ -106,6 +108,33 @@ impl FluidAudio {
 
         self.bridge
             .transcribe_file(&path_str)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Transcribe raw audio samples directly (real-time/streaming use case)
+    ///
+    /// # Arguments
+    /// * `samples` - Audio samples as f32 array (mono, 16kHz recommended)
+    ///
+    /// # Returns
+    /// * `AsrResult` containing the transcribed text and metadata
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// let audio = FluidAudio::new()?;
+    /// audio.init_asr()?;
+    ///
+    /// // 1 second of audio at 16kHz
+    /// let samples: Vec<f32> = vec![0.0; 16000];
+    /// let result = audio.transcribe_samples(&samples)?;
+    /// println!("Text: {}", result.text);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn transcribe_samples(&self, samples: &[f32]) -> Result<AsrResult, FluidAudioError> {
+        self.bridge
+            .transcribe_samples(samples)
             .map_err(FluidAudioError::from)
     }
 

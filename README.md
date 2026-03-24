@@ -5,6 +5,8 @@ Rust bindings for [FluidAudio](https://github.com/FluidInference/FluidAudio) - a
 ## Features
 
 - **ASR (Automatic Speech Recognition)** - High-quality speech-to-text using Parakeet TDT models
+  - File transcription (`transcribe_file`)
+  - **Real-time sample transcription (`transcribe_samples`)** - for streaming/real-time use cases
 - **VAD (Voice Activity Detection)** - Detect speech segments in audio
 - **Speaker Diarization** - Identify and label different speakers in audio
 
@@ -51,6 +53,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Real-time Sample Transcription (NEW!)
+
+Transcribe raw audio samples directly, perfect for streaming or real-time use cases:
+
+```rust
+use fluidaudio_rs::FluidAudio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = FluidAudio::new()?;
+    audio.init_asr()?;
+
+    // Transcribe 1 second of audio at 16kHz (mono)
+    let samples: Vec<f32> = vec![0.0; 16000];  // Replace with actual audio data
+    let result = audio.transcribe_samples(&samples)?;
+
+    println!("Text: {}", result.text);
+    println!("Processing speed: {:.1}x realtime", result.rtfx);
+
+    Ok(())
+}
+```
+
+**Use cases:**
+- Real-time microphone transcription
+- Network audio streaming
+- Live broadcast captioning
+- Audio processing pipelines
+
+See `examples/transcribe_samples.rs` for a complete example.
 
 ### Voice Activity Detection (VAD)
 

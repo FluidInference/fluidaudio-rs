@@ -79,6 +79,37 @@ class FluidAudioBridgeInternal {
         return (r.text, r.confidence, r.duration, r.processingTime, r.rtfx)
     }
 
+    func transcribeSamples(_ samples: [Float]) throws -> (String, Float, Double, Double, Float) {
+        guard let manager = asrManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: ASRResult?
+        var transcribeError: Error?
+
+        Task {
+            do {
+                result = try await manager.transcribe(samples)
+            } catch {
+                transcribeError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = transcribeError {
+            throw error
+        }
+
+        guard let r = result else {
+            throw BridgeError.noResult
+        }
+
+        return (r.text, r.confidence, r.duration, r.processingTime, r.rtfx)
+    }
+
     func isAsrAvailable() -> Bool {
         return asrManager != nil
     }
@@ -258,6 +289,43 @@ public func fluidaudio_transcribe_file(
         return 0
     } catch {
         print("Transcribe error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_transcribe_samples")
+public func fluidaudio_transcribe_samples(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ samples: UnsafePointer<Float>?,
+    _ count: UInt32,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ outConfidence: UnsafeMutablePointer<Float>?,
+    _ outDuration: UnsafeMutablePointer<Double>?,
+    _ outProcessingTime: UnsafeMutablePointer<Double>?,
+    _ outRtfx: UnsafeMutablePointer<Float>?
+) -> Int32 {
+    guard let ptr = ptr, let samples = samples else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let samplesArray = Array(UnsafeBufferPointer(start: samples, count: Int(count)))
+
+    do {
+        let (text, confidence, duration, processingTime, rtfx) = try bridge.transcribeSamples(samplesArray)
+
+        // Allocate and copy text
+        if let outText = outText {
+            let cString = strdup(text)
+            outText.pointee = cString
+        }
+
+        outConfidence?.pointee = confidence
+        outDuration?.pointee = duration
+        outProcessingTime?.pointee = processingTime
+        outRtfx?.pointee = rtfx
+
+        return 0
+    } catch {
+        print("Transcribe samples error: \(error)")
         return -1
     }
 }
