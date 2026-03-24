@@ -19,6 +19,7 @@ class FluidAudioBridgeInternal {
     private var asrModels: AsrModels?
     private var vadManager: VadManager?
     private var diarizerManager: OfflineDiarizerManager?
+    private var streamingAsrManager: StreamingAsrManager?
 
     init() {}
 
@@ -209,11 +210,167 @@ class FluidAudioBridgeInternal {
         return diarizerManager != nil
     }
 
+    // MARK: - Streaming ASR
+
+    func initializeStreamingAsr() throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        var initError: Error?
+
+        Task {
+            do {
+                let models = try await AsrModels.downloadAndLoad()
+                self.asrModels = models
+
+                let manager = StreamingAsrManager()
+                self.streamingAsrManager = manager
+            } catch {
+                initError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = initError {
+            throw error
+        }
+    }
+
+    func streamingAsrStart() throws {
+        guard let manager = streamingAsrManager, let models = asrModels else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var startError: Error?
+
+        Task {
+            do {
+                try await manager.start(models: models, source: .microphone)
+            } catch {
+                startError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = startError {
+            throw error
+        }
+    }
+
+    func streamingAsrFeed(_ samples: [Float]) throws {
+        guard let manager = streamingAsrManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        Task {
+            // Convert samples to AVAudioPCMBuffer
+            let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: UInt32(samples.count))!
+            buffer.frameLength = UInt32(samples.count)
+
+            let channelData = buffer.floatChannelData![0]
+            for (i, sample) in samples.enumerated() {
+                channelData[i] = sample
+            }
+
+            await manager.streamAudio(buffer)
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+    }
+
+    func streamingAsrFinish() throws -> String {
+        guard let manager = streamingAsrManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: String?
+        var finishError: Error?
+
+        Task {
+            do {
+                result = try await manager.finish()
+            } catch {
+                finishError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = finishError {
+            throw error
+        }
+
+        return result ?? ""
+    }
+
+    func transcribeFileStreaming(_ path: String) throws -> (String, Float, Double, Double, Float) {
+        guard let manager = streamingAsrManager, let models = asrModels else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var text: String?
+        var transcribeError: Error?
+        var duration: Double = 0.0
+        var processingTime: Double = 0.0
+
+        Task {
+            do {
+                let url = URL(fileURLWithPath: path)
+
+                let startTime = Date()
+                try await manager.start(models: models, source: .microphone)
+
+                // Load and stream audio file
+                let audioFile = try AVAudioFile(forReading: url)
+                let format = audioFile.processingFormat
+                duration = Double(audioFile.length) / format.sampleRate
+
+                let frameCount = AVAudioFrameCount(4096)
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+
+                while audioFile.framePosition < audioFile.length {
+                    try audioFile.read(into: buffer)
+                    await manager.streamAudio(buffer)
+                }
+
+                text = try await manager.finish()
+                processingTime = Date().timeIntervalSince(startTime)
+            } catch {
+                transcribeError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = transcribeError {
+            throw error
+        }
+
+        let rtfx = duration > 0 ? Float(duration / processingTime) : 0.0
+        return (text ?? "", 0.0, duration, processingTime, rtfx)
+    }
+
+    func isStreamingAsrAvailable() -> Bool {
+        return streamingAsrManager != nil
+    }
+
     func cleanup() {
         asrManager = nil
         asrModels = nil
         vadManager = nil
         diarizerManager = nil
+        streamingAsrManager = nil
     }
 }
 
@@ -336,6 +493,121 @@ public func fluidaudio_is_asr_available(_ ptr: UnsafeMutableRawPointer?) -> Int3
     let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
     return bridge.isAsrAvailable() ? 1 : 0
 }
+
+// MARK: - Streaming ASR FFI
+
+@_cdecl("fluidaudio_initialize_streaming_asr")
+public func fluidaudio_initialize_streaming_asr(_ ptr: UnsafeMutableRawPointer?) -> Int32 {
+    guard let ptr = ptr else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    do {
+        try bridge.initializeStreamingAsr()
+        return 0
+    } catch {
+        print("Streaming ASR init error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_streaming_asr_start")
+public func fluidaudio_streaming_asr_start(_ ptr: UnsafeMutableRawPointer?) -> Int32 {
+    guard let ptr = ptr else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    do {
+        try bridge.streamingAsrStart()
+        return 0
+    } catch {
+        print("Streaming ASR start error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_streaming_asr_feed")
+public func fluidaudio_streaming_asr_feed(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ samples: UnsafePointer<Float>?,
+    _ count: UInt32
+) -> Int32 {
+    guard let ptr = ptr, let samples = samples else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let samplesArray = Array(UnsafeBufferPointer(start: samples, count: Int(count)))
+
+    do {
+        try bridge.streamingAsrFeed(samplesArray)
+        return 0
+    } catch {
+        print("Streaming ASR feed error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_streaming_asr_finish")
+public func fluidaudio_streaming_asr_finish(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    guard let ptr = ptr else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    do {
+        let text = try bridge.streamingAsrFinish()
+
+        if let outText = outText {
+            let cString = strdup(text)
+            outText.pointee = cString
+        }
+
+        return 0
+    } catch {
+        print("Streaming ASR finish error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_transcribe_file_streaming")
+public func fluidaudio_transcribe_file_streaming(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ path: UnsafePointer<CChar>?,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ outConfidence: UnsafeMutablePointer<Float>?,
+    _ outDuration: UnsafeMutablePointer<Double>?,
+    _ outProcessingTime: UnsafeMutablePointer<Double>?,
+    _ outRtfx: UnsafeMutablePointer<Float>?
+) -> Int32 {
+    guard let ptr = ptr, let path = path else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let pathString = String(cString: path)
+
+    do {
+        let (text, confidence, duration, processingTime, rtfx) = try bridge.transcribeFileStreaming(pathString)
+
+        if let outText = outText {
+            let cString = strdup(text)
+            outText.pointee = cString
+        }
+
+        outConfidence?.pointee = confidence
+        outDuration?.pointee = duration
+        outProcessingTime?.pointee = processingTime
+        outRtfx?.pointee = rtfx
+
+        return 0
+    } catch {
+        print("Streaming transcribe file error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_is_streaming_asr_available")
+public func fluidaudio_is_streaming_asr_available(_ ptr: UnsafeMutableRawPointer?) -> Int32 {
+    guard let ptr = ptr else { return 0 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    return bridge.isStreamingAsrAvailable() ? 1 : 0
+}
+
+// MARK: - VAD FFI
 
 @_cdecl("fluidaudio_initialize_vad")
 public func fluidaudio_initialize_vad(_ ptr: UnsafeMutableRawPointer?, _ threshold: Float) -> Int32 {
