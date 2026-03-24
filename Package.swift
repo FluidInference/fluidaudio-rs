@@ -15,7 +15,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.10.0"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.12.6"),
     ],
     targets: [
         .target(
@@ -23,10 +23,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
-            path: "swift",
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
-            ]
+            path: "swift"
         ),
     ]
 )
