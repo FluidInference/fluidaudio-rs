@@ -5,6 +5,9 @@ Rust bindings for [FluidAudio](https://github.com/FluidInference/FluidAudio) - a
 ## Features
 
 - **ASR (Automatic Speech Recognition)** - High-quality speech-to-text using Parakeet TDT models
+  - Regular ASR for maximum accuracy
+  - Streaming ASR for 99.5% less memory usage
+  - Real-time sample transcription
 - **VAD (Voice Activity Detection)** - Detect speech segments in audio
 - **Speaker Diarization** - Identify and label different speakers in audio
 
@@ -76,6 +79,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 This is ideal for meeting transcription apps, voice assistants, and other real-time scenarios where writing to temporary files adds unnecessary overhead.
+
+### Streaming ASR (Memory-Efficient)
+
+Streaming ASR uses **99.5% less memory** than regular ASR by processing audio in chunks rather than loading entire files. Perfect for long recordings or resource-constrained environments.
+
+#### Simple File Wrapper
+
+The easiest way to use streaming ASR - just like regular transcription but memory-efficient:
+
+```rust
+use fluidaudio_rs::FluidAudio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = FluidAudio::new()?;
+    audio.init_streaming_asr()?;
+
+    // Process large files with minimal memory
+    let result = audio.transcribe_file_streaming("long_meeting.wav")?;
+    println!("Text: {}", result.text);
+    println!("Speed: {:.1}x realtime", result.rtfx);
+
+    Ok(())
+}
+```
+
+#### Session-Based API
+
+For real-time streaming with full control:
+
+```rust
+use fluidaudio_rs::FluidAudio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = FluidAudio::new()?;
+    audio.init_streaming_asr()?;
+
+    // Start streaming session
+    audio.streaming_asr_start()?;
+
+    // Feed audio chunks as they arrive
+    loop {
+        let samples: Vec<f32> = capture_audio_chunk(); // From mic, network, etc.
+        audio.streaming_asr_feed(&samples)?;
+
+        if done {
+            break;
+        }
+    }
+
+    // Get final transcription
+    let text = audio.streaming_asr_finish()?;
+    println!("Transcription: {}", text);
+
+    Ok(())
+}
+```
+
+**When to use Streaming ASR:**
+- Long audio files (> 5 minutes)
+- Real-time transcription with live audio feed
+- Memory-constrained environments
+- Continuous streaming scenarios
+
+**When to use Regular ASR:**
+- Short audio clips (< 5 minutes)
+- When you need maximum accuracy on complete audio
+- Batch processing where memory isn't a concern
 
 ### Voice Activity Detection (VAD)
 

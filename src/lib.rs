@@ -149,6 +149,130 @@ impl FluidAudio {
         self.bridge.is_asr_available()
     }
 
+    // ========== Streaming ASR Methods ==========
+
+    /// Initialize Streaming ASR (memory-efficient, uses 99.5% less memory than regular ASR)
+    ///
+    /// Streaming ASR is ideal for long audio files or real-time transcription where
+    /// memory usage is a concern. It processes audio in chunks rather than loading
+    /// the entire file into memory.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///
+    ///     // Initialize streaming ASR
+    ///     audio.init_streaming_asr()?;
+    ///
+    ///     // Use session-based API for real-time streaming
+    ///     audio.streaming_asr_start()?;
+    ///
+    ///     // Feed audio chunks as they become available
+    ///     let chunk1: Vec<f32> = vec![0.0; 16000]; // 1 second
+    ///     audio.streaming_asr_feed(&chunk1)?;
+    ///
+    ///     let chunk2: Vec<f32> = vec![0.0; 16000]; // another second
+    ///     audio.streaming_asr_feed(&chunk2)?;
+    ///
+    ///     // Get final transcription
+    ///     let text = audio.streaming_asr_finish()?;
+    ///     println!("Transcription: {}", text);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn init_streaming_asr(&self) -> Result<(), FluidAudioError> {
+        self.bridge
+            .initialize_streaming_asr()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Start a streaming ASR session
+    ///
+    /// Call this before feeding audio chunks. Use `streaming_asr_feed()` to process
+    /// audio chunks, then `streaming_asr_finish()` to get the final result.
+    pub fn streaming_asr_start(&self) -> Result<(), FluidAudioError> {
+        self.bridge
+            .streaming_asr_start()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Feed audio samples to the streaming ASR session
+    ///
+    /// # Arguments
+    /// * `samples` - Slice of f32 audio samples (16kHz mono, normalized to -1.0 to 1.0)
+    ///
+    /// Call this multiple times to process audio in chunks. The transcription engine
+    /// will process the audio incrementally.
+    pub fn streaming_asr_feed(&self, samples: &[f32]) -> Result<(), FluidAudioError> {
+        self.bridge
+            .streaming_asr_feed(samples)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Finish the streaming ASR session and get the transcription result
+    ///
+    /// # Returns
+    /// * `String` containing the complete transcribed text
+    ///
+    /// This finalizes processing and returns the full transcription. After calling
+    /// this, you must call `streaming_asr_start()` again to start a new session.
+    pub fn streaming_asr_finish(&self) -> Result<String, FluidAudioError> {
+        self.bridge
+            .streaming_asr_finish()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Transcribe an audio file using streaming ASR (memory-efficient wrapper)
+    ///
+    /// This is a convenience method that handles the session lifecycle for you.
+    /// For long files or when memory usage is critical, this uses significantly
+    /// less memory than `transcribe_file()`.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file (WAV, M4A, MP3, etc.)
+    ///
+    /// # Returns
+    /// * `AsrResult` containing the transcribed text and metadata
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///     audio.init_streaming_asr()?;
+    ///
+    ///     let result = audio.transcribe_file_streaming("long_audio.wav")?;
+    ///     println!("Text: {}", result.text);
+    ///     println!("RTFx: {:.2}x", result.rtfx);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn transcribe_file_streaming<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<AsrResult, FluidAudioError> {
+        let path_str = path.as_ref().to_string_lossy();
+
+        if !path.as_ref().exists() {
+            return Err(FluidAudioError::FileNotFound(path_str.to_string()));
+        }
+
+        self.bridge
+            .transcribe_file_streaming(&path_str)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Check if streaming ASR is initialized and ready
+    pub fn is_streaming_asr_available(&self) -> bool {
+        self.bridge.is_streaming_asr_available()
+    }
+
     // ========== VAD Methods ==========
 
     /// Initialize the VAD (Voice Activity Detection) engine
