@@ -333,6 +333,238 @@ impl FluidAudio {
         self.bridge.is_diarization_available()
     }
 
+    // ========== Qwen3 ASR Methods ==========
+
+    /// Initialize Qwen3-ASR for multilingual transcription (Japanese, Chinese, Vietnamese, etc.)
+    ///
+    /// Qwen3-ASR supports 30+ languages with high accuracy for non-European languages.
+    /// Requires macOS 15+ or iOS 18+.
+    ///
+    /// # Supported Languages
+    /// - East Asian: Japanese, Chinese, Cantonese, Korean
+    /// - Southeast Asian: Vietnamese, Indonesian, Malay, Thai, Filipino
+    /// - European: English, French, German, Spanish, Portuguese, Italian, Dutch, etc.
+    /// - Other: Russian, Arabic, Hindi, Turkish, Persian, and more
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///
+    ///     // Initialize Qwen3 ASR
+    ///     audio.init_qwen3_asr()?;
+    ///
+    ///     // Transcribe Japanese audio
+    ///     let result = audio.qwen3_transcribe_file("japanese_audio.wav", Some("ja"))?;
+    ///     println!("Japanese: {}", result.text);
+    ///
+    ///     // Or automatic language detection
+    ///     let result = audio.qwen3_transcribe_file("audio.wav", None)?;
+    ///     println!("Text: {}", result.text);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn init_qwen3_asr(&self) -> Result<(), FluidAudioError> {
+        self.bridge
+            .initialize_qwen3_asr()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Transcribe audio samples using Qwen3-ASR
+    ///
+    /// # Arguments
+    /// * `samples` - Slice of f32 audio samples (16kHz mono, normalized to -1.0 to 1.0)
+    /// * `language` - Optional language code (e.g., "ja" for Japanese, "zh" for Chinese).
+    ///                Pass None for automatic language detection.
+    ///
+    /// # Language Codes
+    /// Use ISO 639-1 codes or English names:
+    /// - Japanese: "ja" or "Japanese"
+    /// - Chinese: "zh" or "Chinese"
+    /// - Vietnamese: "vi" or "Vietnamese"
+    /// - Korean: "ko" or "Korean"
+    /// - English: "en" or "English"
+    /// - And many more (see init_qwen3_asr documentation)
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///     audio.init_qwen3_asr()?;
+    ///
+    ///     // Japanese audio samples
+    ///     let samples: Vec<f32> = vec![0.0; 16000]; // 1 second
+    ///
+    ///     let result = audio.qwen3_transcribe_samples(&samples, Some("ja"))?;
+    ///     println!("Japanese text: {}", result.text);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn qwen3_transcribe_samples(
+        &self,
+        samples: &[f32],
+        language: Option<&str>,
+    ) -> Result<AsrResult, FluidAudioError> {
+        self.bridge
+            .qwen3_transcribe_samples(samples, language)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Transcribe an audio file using Qwen3-ASR
+    ///
+    /// # Arguments
+    /// * `path` - Path to the audio file (WAV, M4A, MP3, etc.)
+    /// * `language` - Optional language code (e.g., "ja", "zh", "vi"). None for auto-detect.
+    ///
+    /// # Returns
+    /// * `AsrResult` containing the transcribed text and metadata
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///     audio.init_qwen3_asr()?;
+    ///
+    ///     // Transcribe with explicit language hint
+    ///     let result = audio.qwen3_transcribe_file("meeting.wav", Some("Japanese"))?;
+    ///     println!("Text: {}", result.text);
+    ///     println!("RTFx: {:.2}x", result.rtfx);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn qwen3_transcribe_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+        language: Option<&str>,
+    ) -> Result<AsrResult, FluidAudioError> {
+        let path_str = path.as_ref().to_string_lossy();
+
+        if !path.as_ref().exists() {
+            return Err(FluidAudioError::FileNotFound(path_str.to_string()));
+        }
+
+        self.bridge
+            .qwen3_transcribe_file(&path_str, language)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Check if Qwen3-ASR is initialized and ready
+    pub fn is_qwen3_asr_available(&self) -> bool {
+        self.bridge.is_qwen3_asr_available()
+    }
+
+    // ========== Qwen3 Streaming Methods ==========
+
+    /// Initialize Qwen3 Streaming ASR for real-time multilingual transcription
+    ///
+    /// Streaming mode provides incremental transcription results as audio is fed.
+    /// Ideal for real-time applications like meeting transcription or live captions.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///
+    ///     // Initialize Qwen3 streaming
+    ///     audio.init_qwen3_streaming()?;
+    ///
+    ///     // Start session with Japanese language
+    ///     audio.qwen3_streaming_start(Some("ja"), 1.0, 2.0, 30.0)?;
+    ///
+    ///     // Feed audio chunks
+    ///     loop {
+    ///         let chunk: Vec<f32> = capture_audio_chunk();
+    ///
+    ///         if let Some(partial) = audio.qwen3_streaming_feed(&chunk)? {
+    ///             println!("Partial: {}", partial);
+    ///         }
+    ///
+    ///         if done { break; }
+    ///     }
+    ///
+    ///     // Get final result
+    ///     let final_text = audio.qwen3_streaming_finish()?;
+    ///     println!("Final: {}", final_text);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn init_qwen3_streaming(&self) -> Result<(), FluidAudioError> {
+        self.bridge
+            .initialize_qwen3_streaming()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Start a Qwen3 streaming session
+    ///
+    /// # Arguments
+    /// * `language` - Optional language code (e.g., "ja", "zh"). None for auto-detect.
+    /// * `min_audio_seconds` - Minimum audio duration before first transcription (default: 1.0)
+    /// * `chunk_seconds` - How often to re-transcribe (default: 2.0)
+    /// * `max_audio_seconds` - Maximum audio to accumulate (default: 30.0)
+    ///
+    /// Call this before feeding audio chunks. The streaming engine will provide
+    /// partial results as configured by the timing parameters.
+    pub fn qwen3_streaming_start(
+        &self,
+        language: Option<&str>,
+        min_audio_seconds: f64,
+        chunk_seconds: f64,
+        max_audio_seconds: f64,
+    ) -> Result<(), FluidAudioError> {
+        self.bridge
+            .qwen3_streaming_start(language, min_audio_seconds, chunk_seconds, max_audio_seconds)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Feed audio samples to Qwen3 streaming session
+    ///
+    /// # Arguments
+    /// * `samples` - Slice of f32 audio samples (16kHz mono, normalized to -1.0 to 1.0)
+    ///
+    /// # Returns
+    /// * `Option<String>` - Partial transcript if enough audio has been accumulated, None otherwise
+    ///
+    /// Call this repeatedly as audio chunks become available. The engine will return
+    /// partial transcripts according to the configuration set in `qwen3_streaming_start`.
+    pub fn qwen3_streaming_feed(
+        &self,
+        samples: &[f32],
+    ) -> Result<Option<String>, FluidAudioError> {
+        self.bridge
+            .qwen3_streaming_feed(samples)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Finish Qwen3 streaming session and get final transcription
+    ///
+    /// # Returns
+    /// * `String` - Complete transcription of all audio fed to the session
+    ///
+    /// This finalizes the session and returns the final transcript. After calling
+    /// this, you must call `qwen3_streaming_start()` again to start a new session.
+    pub fn qwen3_streaming_finish(&self) -> Result<String, FluidAudioError> {
+        self.bridge
+            .qwen3_streaming_finish()
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Check if Qwen3 streaming is initialized and ready
+    pub fn is_qwen3_streaming_available(&self) -> bool {
+        self.bridge.is_qwen3_streaming_available()
+    }
+
     // ========== System Info ==========
 
     /// Get system information
