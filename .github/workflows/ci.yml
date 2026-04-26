@@ -11,9 +11,16 @@ env:
 jobs:
   test:
     name: Build and test (macOS, Apple Silicon)
-    runs-on: macos-14
+    # macos-15 ships Xcode 16 / Swift 6, required by FluidAudio 0.14.1.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Show Swift version
+        run: swift --version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
