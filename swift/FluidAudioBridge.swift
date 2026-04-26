@@ -17,11 +17,14 @@ struct BridgeDiarizationSegment {
 class FluidAudioBridgeInternal {
     private var asrManager: AsrManager?
     private var asrModels: AsrModels?
+    private var asrDecoderState: TdtDecoderState?
     private var vadManager: VadManager?
     private var diarizerManager: OfflineDiarizerManager?
-    private var streamingAsrManager: StreamingAsrManager?
-    private var qwen3AsrManager: Qwen3AsrManager?
-    private var qwen3StreamingManager: Qwen3StreamingManager?
+    private var streamingAsrManager: SlidingWindowAsrManager?
+    // Qwen3 types require macOS 15 / iOS 18, so store as Any? and cast at call sites
+    // guarded by `if #available(macOS 15, iOS 18, *)`.
+    private var qwen3AsrManagerStorage: Any?
+    private var qwen3StreamingManagerStorage: Any?
 
     init() {}
 
@@ -35,7 +38,12 @@ class FluidAudioBridgeInternal {
                 self.asrModels = models
 
                 let manager = AsrManager()
-                try await manager.initialize(models: models)
+                try await manager.loadModels(models)
+                // Construct decoder state first so a throw here does not leave
+                // `asrManager` set while `asrDecoderState` is nil — that combo
+                // makes `isAsrAvailable()` return true but every transcribe call
+                // fail with `notInitialized`.
+                self.asrDecoderState = try TdtDecoderState()
                 self.asrManager = manager
             } catch {
                 initError = error
@@ -51,7 +59,7 @@ class FluidAudioBridgeInternal {
     }
 
     func transcribeFile(_ path: String) throws -> (String, Float, Double, Double, Float) {
-        guard let manager = asrManager else {
+        guard let manager = asrManager, var decoderState = asrDecoderState else {
             throw BridgeError.notInitialized
         }
 
@@ -62,7 +70,7 @@ class FluidAudioBridgeInternal {
         Task {
             do {
                 let url = URL(fileURLWithPath: path)
-                result = try await manager.transcribe(url)
+                result = try await manager.transcribe(url, decoderState: &decoderState)
             } catch {
                 transcribeError = error
             }
@@ -70,6 +78,7 @@ class FluidAudioBridgeInternal {
         }
 
         semaphore.wait()
+        self.asrDecoderState = decoderState
 
         if let error = transcribeError {
             throw error
@@ -83,7 +92,7 @@ class FluidAudioBridgeInternal {
     }
 
     func transcribeSamples(_ samples: [Float]) throws -> (String, Float, Double, Double, Float) {
-        guard let manager = asrManager else {
+        guard let manager = asrManager, var decoderState = asrDecoderState else {
             throw BridgeError.notInitialized
         }
 
@@ -93,7 +102,7 @@ class FluidAudioBridgeInternal {
 
         Task {
             do {
-                result = try await manager.transcribe(samples)
+                result = try await manager.transcribe(samples, decoderState: &decoderState)
             } catch {
                 transcribeError = error
             }
@@ -101,6 +110,7 @@ class FluidAudioBridgeInternal {
         }
 
         semaphore.wait()
+        self.asrDecoderState = decoderState
 
         if let error = transcribeError {
             throw error
@@ -223,7 +233,8 @@ class FluidAudioBridgeInternal {
                 let models = try await AsrModels.downloadAndLoad()
                 self.asrModels = models
 
-                let manager = StreamingAsrManager()
+                let manager = SlidingWindowAsrManager()
+                try await manager.loadModels(models)
                 self.streamingAsrManager = manager
             } catch {
                 initError = error
@@ -239,7 +250,7 @@ class FluidAudioBridgeInternal {
     }
 
     func streamingAsrStart() throws {
-        guard let manager = streamingAsrManager, let models = asrModels else {
+        guard let manager = streamingAsrManager else {
             throw BridgeError.notInitialized
         }
 
@@ -248,7 +259,7 @@ class FluidAudioBridgeInternal {
 
         Task {
             do {
-                try await manager.start(models: models, source: .microphone)
+                try await manager.startStreaming(source: .microphone)
             } catch {
                 startError = error
             }
@@ -315,7 +326,7 @@ class FluidAudioBridgeInternal {
     }
 
     func transcribeFileStreaming(_ path: String) throws -> (String, Float, Double, Double, Float) {
-        guard let manager = streamingAsrManager, let models = asrModels else {
+        guard let manager = streamingAsrManager else {
             throw BridgeError.notInitialized
         }
 
@@ -330,7 +341,7 @@ class FluidAudioBridgeInternal {
                 let url = URL(fileURLWithPath: path)
 
                 let startTime = Date()
-                try await manager.start(models: models, source: .microphone)
+                try await manager.startStreaming(source: .microphone)
 
                 // Load and stream audio file
                 let audioFile = try AVAudioFile(forReading: url)
@@ -378,9 +389,9 @@ class FluidAudioBridgeInternal {
             do {
                 let manager = Qwen3AsrManager()
                 // Models are auto-downloaded from HuggingFace on first use
-                let modelDir = try await Qwen3AsrModels.downloadModelIfNeeded()
+                let modelDir = try await Qwen3AsrModels.download()
                 try await manager.loadModels(from: modelDir)
-                self.qwen3AsrManager = manager
+                self.qwen3AsrManagerStorage = manager
             } catch {
                 initError = error
             }
@@ -396,7 +407,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func qwen3TranscribeSamples(_ samples: [Float], language: String?) throws -> (String, Float, Double, Double, Float) {
-        guard let manager = qwen3AsrManager else {
+        guard let manager = qwen3AsrManagerStorage as? Qwen3AsrManager else {
             throw BridgeError.notInitialized
         }
 
@@ -430,7 +441,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func qwen3TranscribeFile(_ path: String, language: String?) throws -> (String, Float, Double, Double, Float) {
-        guard qwen3AsrManager != nil else {
+        guard qwen3AsrManagerStorage is Qwen3AsrManager else {
             throw BridgeError.notInitialized
         }
 
@@ -497,7 +508,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func isQwen3AsrAvailable() -> Bool {
-        return qwen3AsrManager != nil
+        return qwen3AsrManagerStorage is Qwen3AsrManager
     }
 
     // MARK: - Qwen3 Streaming
@@ -510,12 +521,12 @@ class FluidAudioBridgeInternal {
         Task {
             do {
                 let asrManager = Qwen3AsrManager()
-                let modelDir = try await Qwen3AsrModels.downloadModelIfNeeded()
+                let modelDir = try await Qwen3AsrModels.download()
                 try await asrManager.loadModels(from: modelDir)
 
                 let streamingManager = Qwen3StreamingManager(asrManager: asrManager)
-                self.qwen3AsrManager = asrManager
-                self.qwen3StreamingManager = streamingManager
+                self.qwen3AsrManagerStorage = asrManager
+                self.qwen3StreamingManagerStorage = streamingManager
             } catch {
                 initError = error
             }
@@ -531,7 +542,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func qwen3StreamingStart(language: String?, minAudioSeconds: Double, chunkSeconds: Double, maxAudioSeconds: Double) throws {
-        guard let manager = qwen3StreamingManager else {
+        guard let manager = qwen3StreamingManagerStorage as? Qwen3StreamingManager else {
             throw BridgeError.notInitialized
         }
 
@@ -555,7 +566,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func qwen3StreamingFeed(_ samples: [Float]) throws -> String? {
-        guard let manager = qwen3StreamingManager else {
+        guard let manager = qwen3StreamingManagerStorage as? Qwen3StreamingManager else {
             throw BridgeError.notInitialized
         }
 
@@ -583,7 +594,7 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func qwen3StreamingFinish() throws -> String {
-        guard let manager = qwen3StreamingManager else {
+        guard let manager = qwen3StreamingManagerStorage as? Qwen3StreamingManager else {
             throw BridgeError.notInitialized
         }
 
@@ -611,17 +622,18 @@ class FluidAudioBridgeInternal {
 
     @available(macOS 15, iOS 18, *)
     func isQwen3StreamingAvailable() -> Bool {
-        return qwen3StreamingManager != nil
+        return qwen3StreamingManagerStorage is Qwen3StreamingManager
     }
 
     func cleanup() {
         asrManager = nil
         asrModels = nil
+        asrDecoderState = nil
         vadManager = nil
         diarizerManager = nil
         streamingAsrManager = nil
-        qwen3AsrManager = nil
-        qwen3StreamingManager = nil
+        qwen3AsrManagerStorage = nil
+        qwen3StreamingManagerStorage = nil
     }
 }
 

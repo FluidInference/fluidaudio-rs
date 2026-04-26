@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and test (macOS, Apple Silicon)
+    # macos-15 ships Xcode 16 / Swift 6, required by FluidAudio 0.14.1.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build library
+        run: cargo build --lib
+
+      - name: Run FFI integration tests
+        run: cargo test --test ffi_bindings
+
+      - name: Run library unit tests
+        run: cargo test --lib
