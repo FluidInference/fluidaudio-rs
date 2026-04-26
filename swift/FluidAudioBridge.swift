@@ -39,8 +39,12 @@ class FluidAudioBridgeInternal {
 
                 let manager = AsrManager()
                 try await manager.loadModels(models)
-                self.asrManager = manager
+                // Construct decoder state first so a throw here does not leave
+                // `asrManager` set while `asrDecoderState` is nil — that combo
+                // makes `isAsrAvailable()` return true but every transcribe call
+                // fail with `notInitialized`.
                 self.asrDecoderState = try TdtDecoderState()
+                self.asrManager = manager
             } catch {
                 initError = error
             }
