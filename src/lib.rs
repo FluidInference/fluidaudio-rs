@@ -38,7 +38,7 @@ use std::path::Path;
 use thiserror::Error;
 
 // Re-export FFI types
-pub use ffi::{AsrResult, DiarizationSegment, SystemInfo};
+pub use ffi::{AsrResult, DiarizationSegment, SystemInfo, VadFrame};
 
 /// Errors that can occur when using FluidAudio
 #[derive(Error, Debug)]
@@ -288,6 +288,52 @@ impl FluidAudio {
     /// Check if VAD is initialized and ready
     pub fn is_vad_available(&self) -> bool {
         self.bridge.is_vad_available()
+    }
+
+    /// Run VAD over an audio file.
+    ///
+    /// The audio is automatically resampled to 16 kHz mono Float32 and processed
+    /// in 4096-sample (256 ms) chunks. One [`VadFrame`] is returned per chunk.
+    ///
+    /// # Arguments
+    /// * `path` - Path to an audio file (WAV, M4A, MP3, etc.)
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use fluidaudio_rs::FluidAudio;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let audio = FluidAudio::new()?;
+    ///     audio.init_vad(0.5)?;
+    ///     let frames = audio.vad_process_file("speech.wav")?;
+    ///     let voiced = frames.iter().filter(|f| f.is_voice_active).count();
+    ///     println!("{} / {} chunks classified as voice", voiced, frames.len());
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn vad_process_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<Vec<VadFrame>, FluidAudioError> {
+        let path_str = path.as_ref().to_string_lossy();
+
+        if !path.as_ref().exists() {
+            return Err(FluidAudioError::FileNotFound(path_str.to_string()));
+        }
+
+        self.bridge
+            .vad_process_file(&path_str)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Run VAD over raw 16 kHz mono Float32 samples.
+    ///
+    /// One [`VadFrame`] is returned for every 4096-sample (256 ms) chunk; the
+    /// trailing partial chunk (if any) is padded internally.
+    pub fn vad_process_samples(&self, samples: &[f32]) -> Result<Vec<VadFrame>, FluidAudioError> {
+        self.bridge
+            .vad_process_samples(samples)
+            .map_err(FluidAudioError::from)
     }
 
     // ========== Diarization Methods ==========
@@ -575,6 +621,64 @@ impl FluidAudio {
     /// Check if running on Apple Silicon
     pub fn is_apple_silicon(&self) -> bool {
         self.bridge.is_apple_silicon()
+    }
+
+    /// Check if running on an Intel Mac (x86_64).
+    ///
+    /// Local Apple-Silicon-only models (Parakeet, Qwen3, CoreML TTS) will fail
+    /// to load on Intel Macs. Apps can use this to gate UI selection of those
+    /// models and steer Intel users to cloud transcription instead.
+    pub fn is_intel_mac(&self) -> bool {
+        self.bridge.is_intel_mac()
+    }
+
+    // ========== ITN (Inverse Text Normalization) ==========
+
+    /// Normalize a short spoken-form expression to written form.
+    ///
+    /// Examples:
+    /// - `"two hundred thirty two"` → `"232"`
+    /// - `"five dollars and fifty cents"` → `"$5.50"`
+    /// - `"period"` → `"."`
+    ///
+    /// Intended for short fragments. For full sentences with mixed punctuation
+    /// commands and ordinary prose, prefer [`itn_normalize_sentence`](Self::itn_normalize_sentence).
+    pub fn itn_normalize(&self, text: &str) -> Result<String, FluidAudioError> {
+        self.bridge
+            .itn_normalize(text)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Sentence-mode normalization with sliding-window span matching.
+    ///
+    /// Uses Apple's NaturalLanguage framework to disambiguate words like
+    /// `"period"` between punctuation commands and ordinary nouns/verbs.
+    pub fn itn_normalize_sentence(&self, text: &str) -> Result<String, FluidAudioError> {
+        self.bridge
+            .itn_normalize_sentence(text)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Sentence-mode normalization with a caller-controlled maximum span size
+    /// (in tokens). Larger spans catch longer multi-word numbers/dates at the
+    /// cost of more work per sentence.
+    pub fn itn_normalize_sentence_max_span(
+        &self,
+        text: &str,
+        max_span_tokens: u32,
+    ) -> Result<String, FluidAudioError> {
+        self.bridge
+            .itn_normalize_sentence_max_span(text, max_span_tokens)
+            .map_err(FluidAudioError::from)
+    }
+
+    /// Whether the underlying native NeMo ITN library is loaded.
+    ///
+    /// When `false`, the Swift-side normalizer falls back to its
+    /// Apple-NaturalLanguage-only path (still functional, but with reduced
+    /// coverage on long multi-token expressions).
+    pub fn itn_is_native_available(&self) -> bool {
+        self.bridge.itn_is_native_available()
     }
 
     // ========== Cleanup ==========
