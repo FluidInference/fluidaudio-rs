@@ -97,6 +97,20 @@ fn is_apple_silicon_matches_system_info() {
     assert_eq!(audio.is_apple_silicon(), audio.system_info().is_apple_silicon);
 }
 
+/// `is_intel_mac()` and `is_apple_silicon()` must be mutually exclusive: a
+/// process is either arm64 or x86_64, never both, never neither (for the
+/// architectures FluidAudio supports).
+#[test]
+fn is_intel_mac_and_is_apple_silicon_are_exclusive() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    let arm = audio.is_apple_silicon();
+    let intel = audio.is_intel_mac();
+    assert!(
+        arm != intel,
+        "expected exactly one of (apple_silicon, intel_mac) to be true, got both={arm} and intel={intel}"
+    );
+}
+
 /// File-based methods must validate the path before crossing the FFI boundary,
 /// so a missing file returns `FileNotFound` rather than panicking inside Swift.
 #[test]
@@ -146,6 +160,63 @@ fn qwen3_streaming_session_methods_error_before_init() {
     assert!(audio.qwen3_streaming_finish().is_err());
 }
 
+/// VAD `process` methods must error before `init_vad` rather than crash.
+#[test]
+fn vad_process_errors_before_init() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    assert!(audio.vad_process_samples(&[0.0_f32; 4096]).is_err());
+    assert!(audio
+        .vad_process_file("/this/path/definitely/does/not/exist.wav")
+        .is_err());
+}
+
+/// VAD `process_file` validates the path on the Rust side and returns
+/// `FileNotFound` (not a Swift-side error) when the path doesn't exist.
+#[test]
+fn vad_process_file_returns_file_not_found() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    let err = audio
+        .vad_process_file("/this/path/definitely/does/not/exist.wav")
+        .expect_err("vad_process_file with missing path must error");
+    assert!(matches!(err, FluidAudioError::FileNotFound(_)));
+}
+
+/// ITN does not require model loading — `TextNormalizer.shared` is always
+/// available. Calling `itn_normalize` on a fresh bridge should round-trip a
+/// string from Swift back to Rust without crashing.
+#[test]
+fn itn_normalize_round_trips() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    // Use a string that won't be modified by ITN regardless of which backend
+    // is active. We only care that we got a String back, not that it matches
+    // a specific normalized form.
+    let result = audio.itn_normalize("hello").expect("itn_normalize");
+    assert!(!result.is_empty(), "ITN result should not be empty");
+}
+
+/// Sentence-mode ITN must also work without init and accept arbitrary text.
+#[test]
+fn itn_normalize_sentence_round_trips() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    let result = audio
+        .itn_normalize_sentence("the quick brown fox")
+        .expect("itn_normalize_sentence");
+    assert!(!result.is_empty());
+
+    let result = audio
+        .itn_normalize_sentence_max_span("five plus five", 8)
+        .expect("itn_normalize_sentence_max_span");
+    assert!(!result.is_empty());
+}
+
+/// `itn_is_native_available()` must return a definite bool without crashing,
+/// regardless of whether the native NeMo library is loaded in this process.
+#[test]
+fn itn_is_native_available_returns_bool() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    let _ = audio.itn_is_native_available();
+}
+
 // ---------------------------------------------------------------------------
 // Heavier tests below: gated behind `--ignored` because they download models
 // from HuggingFace and warm up the Apple Neural Engine (cold start ~20s).
@@ -158,6 +229,27 @@ fn vad_initializes() {
     let audio = FluidAudio::new().expect("bridge creation");
     audio.init_vad(0.85).expect("VAD init");
     assert!(audio.is_vad_available());
+}
+
+/// End-to-end VAD on a silence buffer. We don't assert classification
+/// (which depends on the threshold) — only that we get one frame per 4096
+/// samples and the per-frame fields look sane.
+#[test]
+#[ignore = "downloads VAD model from HuggingFace on first run"]
+fn vad_processes_silence_buffer() {
+    let audio = FluidAudio::new().expect("bridge creation");
+    audio.init_vad(0.85).expect("VAD init");
+
+    // 2 seconds of silence at 16kHz mono = 32_000 samples = ~7.8 chunks of 4096.
+    // The Swift side pads the trailing partial chunk, so expect ceil(32000/4096) = 8.
+    let samples = vec![0.0_f32; 16_000 * 2];
+    let frames = audio.vad_process_samples(&samples).expect("vad process");
+
+    assert_eq!(frames.len(), 8, "expected 8 chunks for 2s at 16kHz");
+    for frame in &frames {
+        assert!(frame.probability >= 0.0 && frame.probability <= 1.0);
+        assert!(frame.processing_time >= 0.0);
+    }
 }
 
 /// End-to-end ASR sanity check on a buffer of silence. We don't assert on the

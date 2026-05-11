@@ -84,6 +84,51 @@ extern "C" {
     fn fluidaudio_get_chip_name(out: *mut *mut i8);
     fn fluidaudio_get_memory_gb() -> f64;
     fn fluidaudio_is_apple_silicon() -> i32;
+    fn fluidaudio_is_intel_mac() -> i32;
+
+    // VAD processing
+    fn fluidaudio_vad_process_file(
+        bridge: *mut std::ffi::c_void,
+        path: *const i8,
+        out_probabilities: *mut *mut f32,
+        out_is_voice_active: *mut *mut u8,
+        out_processing_times: *mut *mut f64,
+        out_count: *mut u32,
+    ) -> i32;
+    fn fluidaudio_vad_process_samples(
+        bridge: *mut std::ffi::c_void,
+        samples: *const f32,
+        count: u32,
+        out_probabilities: *mut *mut f32,
+        out_is_voice_active: *mut *mut u8,
+        out_processing_times: *mut *mut f64,
+        out_count: *mut u32,
+    ) -> i32;
+    fn fluidaudio_free_vad_result(
+        probabilities: *mut f32,
+        is_voice_active: *mut u8,
+        processing_times: *mut f64,
+        count: u32,
+    );
+
+    // ITN (Inverse Text Normalization)
+    fn fluidaudio_itn_normalize(
+        bridge: *mut std::ffi::c_void,
+        text: *const i8,
+        out_text: *mut *mut i8,
+    ) -> i32;
+    fn fluidaudio_itn_normalize_sentence(
+        bridge: *mut std::ffi::c_void,
+        text: *const i8,
+        out_text: *mut *mut i8,
+    ) -> i32;
+    fn fluidaudio_itn_normalize_sentence_max_span(
+        bridge: *mut std::ffi::c_void,
+        text: *const i8,
+        max_span_tokens: u32,
+        out_text: *mut *mut i8,
+    ) -> i32;
+    fn fluidaudio_itn_is_native_available(bridge: *mut std::ffi::c_void) -> i32;
 
     // Qwen3 ASR
     fn fluidaudio_initialize_qwen3_asr(bridge: *mut std::ffi::c_void) -> i32;
@@ -702,9 +747,156 @@ impl FluidAudioBridge {
         unsafe { fluidaudio_is_apple_silicon() != 0 }
     }
 
+    pub fn is_intel_mac(&self) -> bool {
+        unsafe { fluidaudio_is_intel_mac() != 0 }
+    }
+
+    pub fn vad_process_file(&self, path: &str) -> Result<Vec<VadFrame>, String> {
+        let c_path = CString::new(path).map_err(|_| "Invalid path")?;
+
+        let mut probs_ptr: *mut f32 = std::ptr::null_mut();
+        let mut voice_ptr: *mut u8 = std::ptr::null_mut();
+        let mut times_ptr: *mut f64 = std::ptr::null_mut();
+        let mut count: u32 = 0;
+
+        let status = unsafe {
+            fluidaudio_vad_process_file(
+                self.ptr,
+                c_path.as_ptr(),
+                &mut probs_ptr,
+                &mut voice_ptr,
+                &mut times_ptr,
+                &mut count,
+            )
+        };
+
+        if status != 0 {
+            return Err("VAD process file failed".to_string());
+        }
+
+        Ok(unsafe { collect_vad_frames(probs_ptr, voice_ptr, times_ptr, count) })
+    }
+
+    pub fn vad_process_samples(&self, samples: &[f32]) -> Result<Vec<VadFrame>, String> {
+        let mut probs_ptr: *mut f32 = std::ptr::null_mut();
+        let mut voice_ptr: *mut u8 = std::ptr::null_mut();
+        let mut times_ptr: *mut f64 = std::ptr::null_mut();
+        let mut count: u32 = 0;
+
+        let status = unsafe {
+            fluidaudio_vad_process_samples(
+                self.ptr,
+                samples.as_ptr(),
+                samples.len() as u32,
+                &mut probs_ptr,
+                &mut voice_ptr,
+                &mut times_ptr,
+                &mut count,
+            )
+        };
+
+        if status != 0 {
+            return Err("VAD process samples failed".to_string());
+        }
+
+        Ok(unsafe { collect_vad_frames(probs_ptr, voice_ptr, times_ptr, count) })
+    }
+
+    pub fn itn_normalize(&self, text: &str) -> Result<String, String> {
+        let c_text = CString::new(text).map_err(|_| "Invalid text (NUL byte)")?;
+        let mut out_ptr: *mut i8 = std::ptr::null_mut();
+        let status = unsafe { fluidaudio_itn_normalize(self.ptr, c_text.as_ptr(), &mut out_ptr) };
+        if status != 0 {
+            return Err("ITN normalize failed".to_string());
+        }
+        Ok(unsafe { take_c_string(out_ptr) })
+    }
+
+    pub fn itn_normalize_sentence(&self, text: &str) -> Result<String, String> {
+        let c_text = CString::new(text).map_err(|_| "Invalid text (NUL byte)")?;
+        let mut out_ptr: *mut i8 = std::ptr::null_mut();
+        let status = unsafe {
+            fluidaudio_itn_normalize_sentence(self.ptr, c_text.as_ptr(), &mut out_ptr)
+        };
+        if status != 0 {
+            return Err("ITN normalize_sentence failed".to_string());
+        }
+        Ok(unsafe { take_c_string(out_ptr) })
+    }
+
+    pub fn itn_normalize_sentence_max_span(
+        &self,
+        text: &str,
+        max_span_tokens: u32,
+    ) -> Result<String, String> {
+        let c_text = CString::new(text).map_err(|_| "Invalid text (NUL byte)")?;
+        let mut out_ptr: *mut i8 = std::ptr::null_mut();
+        let status = unsafe {
+            fluidaudio_itn_normalize_sentence_max_span(
+                self.ptr,
+                c_text.as_ptr(),
+                max_span_tokens,
+                &mut out_ptr,
+            )
+        };
+        if status != 0 {
+            return Err("ITN normalize_sentence_max_span failed".to_string());
+        }
+        Ok(unsafe { take_c_string(out_ptr) })
+    }
+
+    pub fn itn_is_native_available(&self) -> bool {
+        unsafe { fluidaudio_itn_is_native_available(self.ptr) != 0 }
+    }
+
     pub fn cleanup(&self) {
         unsafe { fluidaudio_cleanup(self.ptr) };
     }
+}
+
+/// SAFETY: caller must guarantee the four pointers came from a successful
+/// `fluidaudio_vad_process_*` call with the matching `count`. Pointers are
+/// freed via `fluidaudio_free_vad_result` before returning.
+unsafe fn collect_vad_frames(
+    probs_ptr: *mut f32,
+    voice_ptr: *mut u8,
+    times_ptr: *mut f64,
+    count: u32,
+) -> Vec<VadFrame> {
+    if count == 0 || probs_ptr.is_null() || voice_ptr.is_null() || times_ptr.is_null() {
+        // Even when count==0 the Swift side may pass NULL pointers; free safely.
+        fluidaudio_free_vad_result(probs_ptr, voice_ptr, times_ptr, count);
+        return Vec::new();
+    }
+
+    let probs = std::slice::from_raw_parts(probs_ptr, count as usize);
+    let voice = std::slice::from_raw_parts(voice_ptr, count as usize);
+    let times = std::slice::from_raw_parts(times_ptr, count as usize);
+
+    let frames: Vec<VadFrame> = probs
+        .iter()
+        .zip(voice.iter())
+        .zip(times.iter())
+        .map(|((&probability, &is_voice), &processing_time)| VadFrame {
+            probability,
+            is_voice_active: is_voice != 0,
+            processing_time,
+        })
+        .collect();
+
+    fluidaudio_free_vad_result(probs_ptr, voice_ptr, times_ptr, count);
+    frames
+}
+
+/// SAFETY: `ptr` must be either NULL or a C string allocated by the Swift bridge
+/// via `strdup`. Freed via `fluidaudio_free_string` before returning.
+unsafe fn take_c_string(ptr: *mut i8) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    fluidaudio_free_string(ptr);
+    s
 }
 
 impl Drop for FluidAudioBridge {
@@ -751,4 +943,19 @@ impl DiarizationSegment {
     pub fn duration(&self) -> f32 {
         self.end_time - self.start_time
     }
+}
+
+/// A single per-chunk VAD frame.
+///
+/// VAD processes audio in 4096-sample chunks (256 ms at 16 kHz). One `VadFrame`
+/// is produced per chunk.
+#[derive(Debug, Clone, Copy)]
+pub struct VadFrame {
+    /// Raw model probability that this chunk contains voice (0.0–1.0).
+    pub probability: f32,
+    /// Whether `probability` crossed the configured threshold (i.e. the chunk
+    /// is classified as voice-active).
+    pub is_voice_active: bool,
+    /// Wall-clock processing time for this chunk in seconds.
+    pub processing_time: f64,
 }

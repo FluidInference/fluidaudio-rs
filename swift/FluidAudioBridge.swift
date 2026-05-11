@@ -625,6 +625,102 @@ class FluidAudioBridgeInternal {
         return qwen3StreamingManagerStorage is Qwen3StreamingManager
     }
 
+    // MARK: - VAD processing
+
+    /// Returned per-chunk VAD frame data, suitable for flat C arrays.
+    struct BridgeVadFrame {
+        var probability: Float
+        var isVoiceActive: Bool
+        var processingTime: Double
+    }
+
+    func vadProcessFile(_ path: String) throws -> [BridgeVadFrame] {
+        guard let manager = vadManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var frames: [BridgeVadFrame] = []
+        var processError: Error?
+
+        Task {
+            do {
+                let url = URL(fileURLWithPath: path)
+                let results = try await manager.process(url)
+                frames = results.map {
+                    BridgeVadFrame(
+                        probability: $0.probability,
+                        isVoiceActive: $0.isVoiceActive,
+                        processingTime: $0.processingTime
+                    )
+                }
+            } catch {
+                processError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = processError {
+            throw error
+        }
+
+        return frames
+    }
+
+    func vadProcessSamples(_ samples: [Float]) throws -> [BridgeVadFrame] {
+        guard let manager = vadManager else {
+            throw BridgeError.notInitialized
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var frames: [BridgeVadFrame] = []
+        var processError: Error?
+
+        Task {
+            do {
+                let results = try await manager.process(samples)
+                frames = results.map {
+                    BridgeVadFrame(
+                        probability: $0.probability,
+                        isVoiceActive: $0.isVoiceActive,
+                        processingTime: $0.processingTime
+                    )
+                }
+            } catch {
+                processError = error
+            }
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = processError {
+            throw error
+        }
+
+        return frames
+    }
+
+    // MARK: - ITN (Inverse Text Normalization)
+
+    func itnNormalize(_ input: String) -> String {
+        return TextNormalizer.shared.normalize(input)
+    }
+
+    func itnNormalizeSentence(_ input: String) -> String {
+        return TextNormalizer.shared.normalizeSentence(input)
+    }
+
+    func itnNormalizeSentenceMaxSpan(_ input: String, maxSpanTokens: UInt32) -> String {
+        return TextNormalizer.shared.normalizeSentence(input, maxSpanTokens: maxSpanTokens)
+    }
+
+    func itnIsNativeAvailable() -> Bool {
+        return TextNormalizer.shared.isNativeAvailable
+    }
+
     func cleanup() {
         asrManager = nil
         asrModels = nil
@@ -1284,4 +1380,177 @@ public func fluidaudio_is_qwen3_streaming_available(_ ptr: UnsafeMutableRawPoint
     } else {
         return 0
     }
+}
+
+// MARK: - System Info (extended)
+
+@_cdecl("fluidaudio_is_intel_mac")
+public func fluidaudio_is_intel_mac() -> Int32 {
+    return SystemInfo.isIntelMac ? 1 : 0
+}
+
+// MARK: - VAD processing FFI
+
+/// Process an audio file through VAD. Returns the number of frames via outCount.
+/// Each frame contributes one entry to outProbabilities (Float), outIsVoiceActive (UInt8 0/1),
+/// and outProcessingTimes (Double). Caller must free with fluidaudio_free_vad_result.
+@_cdecl("fluidaudio_vad_process_file")
+public func fluidaudio_vad_process_file(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ path: UnsafePointer<CChar>?,
+    _ outProbabilities: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    _ outIsVoiceActive: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outProcessingTimes: UnsafeMutablePointer<UnsafeMutablePointer<Double>?>?,
+    _ outCount: UnsafeMutablePointer<UInt32>?
+) -> Int32 {
+    guard let ptr = ptr, let path = path else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let pathString = String(cString: path)
+
+    do {
+        let frames = try bridge.vadProcessFile(pathString)
+        emitVadFrames(
+            frames,
+            outProbabilities: outProbabilities,
+            outIsVoiceActive: outIsVoiceActive,
+            outProcessingTimes: outProcessingTimes,
+            outCount: outCount
+        )
+        return 0
+    } catch {
+        print("VAD process file error: \(error)")
+        return -1
+    }
+}
+
+/// Process raw 16kHz mono Float32 samples through VAD. See fluidaudio_vad_process_file
+/// for output array semantics.
+@_cdecl("fluidaudio_vad_process_samples")
+public func fluidaudio_vad_process_samples(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ samples: UnsafePointer<Float>?,
+    _ count: UInt32,
+    _ outProbabilities: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    _ outIsVoiceActive: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outProcessingTimes: UnsafeMutablePointer<UnsafeMutablePointer<Double>?>?,
+    _ outCount: UnsafeMutablePointer<UInt32>?
+) -> Int32 {
+    guard let ptr = ptr, let samples = samples else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+
+    let samplesArray = Array(UnsafeBufferPointer(start: samples, count: Int(count)))
+
+    do {
+        let frames = try bridge.vadProcessSamples(samplesArray)
+        emitVadFrames(
+            frames,
+            outProbabilities: outProbabilities,
+            outIsVoiceActive: outIsVoiceActive,
+            outProcessingTimes: outProcessingTimes,
+            outCount: outCount
+        )
+        return 0
+    } catch {
+        print("VAD process samples error: \(error)")
+        return -1
+    }
+}
+
+@_cdecl("fluidaudio_free_vad_result")
+public func fluidaudio_free_vad_result(
+    _ probabilities: UnsafeMutablePointer<Float>?,
+    _ isVoiceActive: UnsafeMutablePointer<UInt8>?,
+    _ processingTimes: UnsafeMutablePointer<Double>?,
+    _ count: UInt32
+) {
+    _ = count // Reserved for future per-element cleanup (none currently needed).
+    probabilities?.deallocate()
+    isVoiceActive?.deallocate()
+    processingTimes?.deallocate()
+}
+
+private func emitVadFrames(
+    _ frames: [FluidAudioBridgeInternal.BridgeVadFrame],
+    outProbabilities: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?,
+    outIsVoiceActive: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    outProcessingTimes: UnsafeMutablePointer<UnsafeMutablePointer<Double>?>?,
+    outCount: UnsafeMutablePointer<UInt32>?
+) {
+    let count = frames.count
+    outCount?.pointee = UInt32(count)
+
+    if count == 0 {
+        outProbabilities?.pointee = nil
+        outIsVoiceActive?.pointee = nil
+        outProcessingTimes?.pointee = nil
+        return
+    }
+
+    let probs = UnsafeMutablePointer<Float>.allocate(capacity: count)
+    let voice = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+    let times = UnsafeMutablePointer<Double>.allocate(capacity: count)
+
+    for (i, frame) in frames.enumerated() {
+        probs[i] = frame.probability
+        voice[i] = frame.isVoiceActive ? 1 : 0
+        times[i] = frame.processingTime
+    }
+
+    outProbabilities?.pointee = probs
+    outIsVoiceActive?.pointee = voice
+    outProcessingTimes?.pointee = times
+}
+
+// MARK: - ITN (Inverse Text Normalization) FFI
+
+/// Normalize a short ASR expression (e.g. "two hundred thirty two" -> "232").
+/// The returned string must be freed via fluidaudio_free_string.
+@_cdecl("fluidaudio_itn_normalize")
+public func fluidaudio_itn_normalize(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ text: UnsafePointer<CChar>?,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    guard let ptr = ptr, let text = text else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    let normalized = bridge.itnNormalize(String(cString: text))
+    outText?.pointee = strdup(normalized)
+    return 0
+}
+
+@_cdecl("fluidaudio_itn_normalize_sentence")
+public func fluidaudio_itn_normalize_sentence(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ text: UnsafePointer<CChar>?,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    guard let ptr = ptr, let text = text else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    let normalized = bridge.itnNormalizeSentence(String(cString: text))
+    outText?.pointee = strdup(normalized)
+    return 0
+}
+
+@_cdecl("fluidaudio_itn_normalize_sentence_max_span")
+public func fluidaudio_itn_normalize_sentence_max_span(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ text: UnsafePointer<CChar>?,
+    _ maxSpanTokens: UInt32,
+    _ outText: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    guard let ptr = ptr, let text = text else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    let normalized = bridge.itnNormalizeSentenceMaxSpan(String(cString: text), maxSpanTokens: maxSpanTokens)
+    outText?.pointee = strdup(normalized)
+    return 0
+}
+
+@_cdecl("fluidaudio_itn_is_native_available")
+public func fluidaudio_itn_is_native_available(
+    _ ptr: UnsafeMutableRawPointer?
+) -> Int32 {
+    guard let ptr = ptr else { return 0 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    return bridge.itnIsNativeAvailable() ? 1 : 0
 }
