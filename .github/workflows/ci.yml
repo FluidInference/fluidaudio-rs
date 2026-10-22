@@ -28,6 +28,7 @@ jobs:
           echo "id=$(swift --version 2>&1 | head -1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
+        id: rust
         uses: dtolnay/rust-toolchain@stable
 
       # Downloaded sources. Portable across images and toolchains, so a stale
@@ -42,12 +43,10 @@ jobs:
           restore-keys: |
             cargo-registry-
 
-      # Build output. Not portable: `target/` holds binaries already linked
-      # against the Swift staticlib that build.rs produces in `.build/`, so the
-      # two have to be cached and invalidated together — caching `target/`
-      # alone lets a linked binary survive while the library it points at does
-      # not. Both are also specific to the image and to the Swift toolchain
-      # that produced them, hence the digest from the step above.
+      # Build output. Not portable: `target/` holds both the Rust binaries and
+      # the Swift staticlib they link against (build.rs builds it under
+      # `$OUT_DIR/swift-build`). It is specific to the image and to the Swift
+      # and Rust toolchains that produced it, hence the digests in the key.
       #
       # Hence: no restore-keys. A prefix fallback is what makes a cache unsound
       # here — it hands the job the *nearest* build tree rather than a matching
@@ -57,11 +56,9 @@ jobs:
       - name: Cache build output
         uses: actions/cache@v4
         with:
-          path: |
-            target
-            .build
+          path: target
           # macos-15 is the `runs-on` above — keep the two in step.
-          key: build-macos-15-${{ runner.arch }}-swift${{ steps.swift.outputs.id }}-${{ hashFiles('**/Cargo.lock', 'Package.resolved') }}
+          key: build-macos-15-${{ runner.arch }}-rust${{ steps.rust.outputs.cachekey }}-swift${{ steps.swift.outputs.id }}-${{ hashFiles('**/Cargo.lock', 'Package.resolved') }}
 
       - name: Build library
         run: cargo build --lib
