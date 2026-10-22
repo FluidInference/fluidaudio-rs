@@ -280,8 +280,8 @@ impl FluidAudioBridge {
     ///   the model for predictions. ML program was KokoroVocoder ...")
     /// ```
     ///
-    /// Both are indistinguishable from here — a missing voice and an
-    /// unusable Neural Engine arrive as the same `-1`.
+    /// Both are indistinguishable from here — a missing voice and a vocoder
+    /// that CoreML cannot prepare arrive as the same `-1`.
     pub fn initialize_kokoro_with_compute_units(
         &self,
         default_voice: &str,

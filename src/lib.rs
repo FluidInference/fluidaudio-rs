@@ -497,7 +497,7 @@ impl FluidAudio {
     ///
     /// Uses [`KokoroComputeUnits::Default`]; see
     /// [`init_kokoro_with_compute_units`](Self::init_kokoro_with_compute_units)
-    /// when the host has no usable Neural Engine.
+    /// to pick another preset.
     pub fn init_kokoro(&self, default_voice: &str, lang: &str) -> Result<(), FluidAudioError> {
         self.bridge
             .initialize_kokoro(default_voice, lang)
@@ -507,17 +507,14 @@ impl FluidAudio {
     /// Initialize Kokoro TTS on an explicit CoreML compute-unit preset.
     ///
     /// FluidAudio's default per-stage mapping pins the Albert, PostAlbert,
-    /// Alignment and Vocoder stages to the Neural Engine. Where no ANE is
-    /// exposed — notably a virtualised macOS guest, such as a GitHub-hosted
-    /// `macos-14` runner — CoreML defers the failure past model load: this call
-    /// succeeds, and the *first* [`synthesize_kokoro`](Self::synthesize_kokoro)
-    /// then fails with `predictionFailed(stage: "vocoder", ...)` wrapping
-    /// "Failed to prepare the model for predictions". `initialize` only
-    /// downloads and loads the mlmodelcs, so there is no prediction at init to
-    /// surface the problem earlier. Passing [`KokoroComputeUnits::CpuAndGpu`]
-    /// (or `CpuOnly`) keeps synthesis working there, and doubles as the
+    /// Alignment and Vocoder stages to the Neural Engine. The other presets let a
+    /// caller compare placements or take [`KokoroComputeUnits::CpuAndGpu`] as the
     /// debugging baseline FluidAudio's `KokoroAne.md` recommends for artefact
-    /// investigations.
+    /// investigations. They are not a known fix for any host.
+    ///
+    /// A CoreML prediction failure surfaces past model load: this call only downloads and
+    /// loads the mlmodelcs, so it succeeds, and the *first*
+    /// [`synthesize_kokoro`](Self::synthesize_kokoro) is what returns the error.
     pub fn init_kokoro_with_compute_units(
         &self,
         default_voice: &str,

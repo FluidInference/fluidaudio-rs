@@ -158,13 +158,12 @@ class FluidAudioBridgeInternal {
 
     /// `computeUnits` maps onto `KokoroAneComputeUnits`. `.default` keeps
     /// FluidAudio's empirical per-stage mapping, which pins Albert / PostAlbert /
-    /// Alignment / Vocoder to the Neural Engine. Callers running where no ANE is
-    /// exposed — a virtualised macOS guest, e.g. a GitHub-hosted `macos-14`
-    /// runner — must pass `.cpuAndGpu` or `.cpuOnly`. Note the failure does not
-    /// land here: `KokoroAneManager.initialize` only downloads and loads the
-    /// mlmodelcs, so this call succeeds and `synthesizeKokoro` then throws
-    /// `predictionFailed(stage: "vocoder", ...)` wrapping "Failed to prepare the
-    /// model for predictions" on the first prediction.
+    /// Alignment / Vocoder to the Neural Engine. The other presets are a control
+    /// for debugging and for comparing placements, not a fix for any host. Note
+    /// a CoreML prediction failure does not land here: `KokoroAneManager.initialize`
+    /// only downloads and loads the mlmodelcs, so this call succeeds and
+    /// `synthesizeKokoro` throws `predictionFailed(stage:, ...)` on the first
+    /// prediction.
     func initializeKokoro(
         defaultVoice: String, lang: String, computeUnits: TtsComputeUnitPreset = .default
     ) throws {

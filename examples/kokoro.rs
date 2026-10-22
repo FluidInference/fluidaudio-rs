@@ -1,27 +1,28 @@
 //! Example: synthesize TTS via FluidAudio Kokoro.
-//! Usage: cargo run --example kokoro --features tts -- "Hello world" af_heart en-us > out.wav
-//!        cargo run --example kokoro --features tts -- "你好" zf_001 zh > out.wav
-//!        cargo run --example kokoro --features tts -- "Hi" af_heart en-us cpu-and-gpu > out.wav
+//! Usage: cargo run --example kokoro --features tts -- out.wav "Hello world" af_heart en-us
+//!        cargo run --example kokoro --features tts -- out.wav "你好" zf_001 zh
+//!        cargo run --example kokoro --features tts -- out.wav "Hi" af_heart en-us cpu-and-gpu
+//! The WAV goes to the file named first, not to stdout: CoreML can print
+//! diagnostics to stdout during synthesis, which would land ahead of the RIFF header.
 //! `lang` selects the KokoroAne variant (`zh` → Mandarin, else English).
-//! The optional 4th arg picks CoreML compute units (`default`, `all-ane`,
-//! `cpu-and-gpu`, `cpu-only`). Hosts without a usable Neural Engine — a
-//! virtualised macOS guest, e.g. a GitHub-hosted `macos-14` runner — need
-//! `cpu-and-gpu`; the default mapping pins four stages to the ANE and fails
-//! there with "Failed to prepare the model for predictions".
+//! The optional 5th arg picks CoreML compute units (`default`, `all-ane`,
+//! `cpu-and-gpu`, `cpu-only`).
 //! `af_heart` (English) and `zf_001` (Mandarin) are the built-in default voices.
 //! Note: English currently hosts only `af_heart`; Mandarin hosts ~100 voices (`zf_*`, `zm_*`, …)
 //! that download on demand from HuggingFace on first use. An id absent from the hosted bundle
 //! fails to load — or pre-stage it as `<voice>.bin` in the model cache.
 use fluidaudio_rs::{FluidAudio, KokoroComputeUnits};
-use std::io::Write;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let text = args.get(1).map(String::as_str).unwrap_or("Hello world");
-    let voice = args.get(2).map(String::as_str).unwrap_or("af_heart");
-    let lang = args.get(3).map(String::as_str).unwrap_or("en-us");
+    let out = args
+        .get(1)
+        .ok_or("usage: kokoro <out.wav> [text] [voice] [lang] [compute-units]")?;
+    let text = args.get(2).map(String::as_str).unwrap_or("Hello world");
+    let voice = args.get(3).map(String::as_str).unwrap_or("af_heart");
+    let lang = args.get(4).map(String::as_str).unwrap_or("en-us");
     let compute_units: KokoroComputeUnits =
-        args.get(4).map_or(Ok(Default::default()), |s| s.parse())?;
+        args.get(5).map_or(Ok(Default::default()), |s| s.parse())?;
 
     let audio = FluidAudio::new()?;
     eprintln!(
@@ -33,6 +34,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let wav = audio.synthesize_kokoro(text, voice, 1.0)?;
     eprintln!("WAV bytes: {}", wav.len());
-    std::io::stdout().write_all(&wav)?;
+    std::fs::write(out, &wav)?;
     Ok(())
 }
