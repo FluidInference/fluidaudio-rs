@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 
 // MARK: - Kokoro TTS C FFI
@@ -13,23 +14,67 @@ private func kokoroLog(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }
 
+/// Shared body of both init entry points. `computeUnits` is the kebab-case preset
+/// name `TtsComputeUnitPreset(cliValue:)` accepts (`default`, `all-ane`,
+/// `cpu-and-gpu`, `cpu-only`). NULL or empty keeps the backend's empirical
+/// per-stage mapping. An unrecognised value is a caller bug, so it fails rather
+/// than silently synthesising on units the caller did not ask for.
+private func initializeKokoro(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ defaultVoice: UnsafePointer<CChar>?,
+    _ lang: UnsafePointer<CChar>?,
+    _ computeUnits: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let ptr = ptr else { return -1 }
+    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
+    let voice = defaultVoice.map { String(cString: $0) } ?? "af_heart"
+    let langString = lang.map { String(cString: $0) } ?? ""
+    let unitsString = computeUnits.map { String(cString: $0) } ?? ""
+
+    let preset: TtsComputeUnitPreset
+    if unitsString.isEmpty {
+        preset = .default
+    } else if let parsed = TtsComputeUnitPreset(cliValue: unitsString) {
+        preset = parsed
+    } else {
+        kokoroLog(
+            "Kokoro init error: unknown compute-units preset '\(unitsString)' "
+                + "(expected one of: \(TtsComputeUnitPreset.allCases.map(\.cliValue).joined(separator: ", ")))")
+        return -1
+    }
+
+    do {
+        try bridge.initializeKokoro(defaultVoice: voice, lang: langString, computeUnits: preset)
+        return 0
+    } catch {
+        kokoroLog("Kokoro init error: \(error)")
+        return -1
+    }
+}
+
+/// Initialize on FluidAudio's empirical per-stage compute-unit mapping.
+///
+/// Kept at three parameters so the existing C symbol's arity is unchanged —
+/// anything linking these entry points from an older build keeps working.
 @_cdecl("fluidaudio_initialize_kokoro")
 public func fluidaudio_initialize_kokoro(
     _ ptr: UnsafeMutableRawPointer?,
     _ defaultVoice: UnsafePointer<CChar>?,
     _ lang: UnsafePointer<CChar>?
 ) -> Int32 {
-    guard let ptr = ptr else { return -1 }
-    let bridge = Unmanaged<FluidAudioBridgeInternal>.fromOpaque(ptr).takeUnretainedValue()
-    let voice = defaultVoice.map { String(cString: $0) } ?? "af_heart"
-    let langString = lang.map { String(cString: $0) } ?? ""
-    do {
-        try bridge.initializeKokoro(defaultVoice: voice, lang: langString)
-        return 0
-    } catch {
-        kokoroLog("Kokoro init error: \(error)")
-        return -1
-    }
+    initializeKokoro(ptr, defaultVoice, lang, nil)
+}
+
+/// Same, but pins every pipeline stage to an explicit preset. See
+/// `initializeKokoro` for the accepted spellings and the failure contract.
+@_cdecl("fluidaudio_initialize_kokoro_with_compute_units")
+public func fluidaudio_initialize_kokoro_with_compute_units(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ defaultVoice: UnsafePointer<CChar>?,
+    _ lang: UnsafePointer<CChar>?,
+    _ computeUnits: UnsafePointer<CChar>?
+) -> Int32 {
+    initializeKokoro(ptr, defaultVoice, lang, computeUnits)
 }
 
 /// Synthesize `text` with `voice` at `speed`; returns a complete WAV byte buffer

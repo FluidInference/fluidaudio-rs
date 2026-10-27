@@ -188,6 +188,12 @@ extern "C" {
         default_voice: *const i8,
         lang: *const i8,
     ) -> i32;
+    fn fluidaudio_initialize_kokoro_with_compute_units(
+        bridge: *mut std::ffi::c_void,
+        default_voice: *const i8,
+        lang: *const i8,
+        compute_units: *const i8,
+    ) -> i32;
     fn fluidaudio_kokoro_synthesize(
         bridge: *mut std::ffi::c_void,
         text: *const i8,
@@ -258,6 +264,47 @@ impl FluidAudioBridge {
             Ok(())
         } else {
             Err("Failed to initialize Kokoro".to_string())
+        }
+    }
+
+    /// The C entry point reports only success or `-1`, so the returned error
+    /// names the preset and nothing else. The actionable text — the CoreML
+    /// domain and code, or the download status for a missing voice pack — is
+    /// written to **stderr** by the Swift side, not carried back across the
+    /// boundary. A caller diagnosing a failure has to read it there. Two real
+    /// examples of what only stderr shows:
+    ///
+    /// ```text
+    /// Kokoro init error: invalidResponse(description: "am_michael voice pack", statusCode: 404)
+    /// Kokoro synthesize error: predictionFailed(stage: "vocoder", ... "Failed to prepare
+    ///   the model for predictions. ML program was KokoroVocoder ...")
+    /// ```
+    ///
+    /// Both are indistinguishable from here — a missing voice and a vocoder
+    /// that CoreML cannot prepare arrive as the same `-1`.
+    pub fn initialize_kokoro_with_compute_units(
+        &self,
+        default_voice: &str,
+        lang: &str,
+        compute_units: &str,
+    ) -> Result<(), String> {
+        let c_voice = CString::new(default_voice).map_err(|_| "Invalid voice")?;
+        let c_lang = CString::new(lang).map_err(|_| "Invalid lang")?;
+        let c_units = CString::new(compute_units).map_err(|_| "Invalid compute units")?;
+        let result = unsafe {
+            fluidaudio_initialize_kokoro_with_compute_units(
+                self.ptr,
+                c_voice.as_ptr(),
+                c_lang.as_ptr(),
+                c_units.as_ptr(),
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to initialize Kokoro (compute units: {compute_units})"
+            ))
         }
     }
 
