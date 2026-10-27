@@ -19,22 +19,46 @@ jobs:
       - name: Select Xcode 16
         run: sudo xcode-select -s /Applications/Xcode_16.app
 
+      # Also emits a digest of the toolchain for the build cache below to key
+      # on. This has to stay ahead of that step, and after Xcode selection.
       - name: Show Swift version
-        run: swift --version
+        id: swift
+        run: |
+          swift --version
+          echo "id=$(swift --version 2>&1 | head -1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
+        id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry and target
+      # Downloaded sources. Portable across images and toolchains, so a stale
+      # hit here is harmless and a prefix fallback is worth having.
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'Package.resolved') }}
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-registry-
+
+      # Build output. Not portable: `target/` holds both the Rust binaries and
+      # the Swift staticlib they link against (build.rs builds it under
+      # `$OUT_DIR/swift-build`). It is specific to the image and to the Swift
+      # and Rust toolchains that produced it, hence the digests in the key.
+      #
+      # Hence: no restore-keys. A prefix fallback is what makes a cache unsound
+      # here — it hands the job the *nearest* build tree rather than a matching
+      # one, and `runner.os` is "macOS" for every macOS image, so a macos-14
+      # tree would restore into a macos-15 job. Rebuilding takes well under a
+      # minute; debugging a binary linked on another image does not.
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: target
+          # macos-15 is the `runs-on` above — keep the two in step.
+          key: build-macos-15-${{ runner.arch }}-rust${{ steps.rust.outputs.cachekey }}-swift${{ steps.swift.outputs.id }}-${{ hashFiles('**/Cargo.lock', 'Package.resolved') }}
 
       - name: Build library
         run: cargo build --lib
