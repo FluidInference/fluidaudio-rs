@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+# The repo's default token is read-only; creating the GitHub Release writes.
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
