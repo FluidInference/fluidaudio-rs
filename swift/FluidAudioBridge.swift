@@ -519,7 +519,7 @@ class FluidAudioBridgeInternal {
                 let models = try await AsrModels.downloadAndLoad()
                 self.asrModels = models
 
-                let manager = SlidingWindowAsrManager()
+                let manager = SlidingWindowAsrManager(config: .streaming)
                 try await manager.loadModels(models)
                 self.streamingAsrManager = manager
             } catch {
